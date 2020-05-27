@@ -1,0 +1,143 @@
+require("dotenv").config();
+const express = require("express");
+const app = express();
+const url = require("url");
+const fetch = require("node-fetch")
+const mongoose = require("mongoose");
+const socketio = require("socket.io");
+const http = require("http");
+const Auth = require("./models/auth");
+
+const server = http.createServer(app);
+const io = socketio(server);
+
+const PORT = process.env.PORT || 5000;
+
+mongoose.connect(process.env.DATABASE_URL, {
+  useCreateIndex: true,
+  useNewUrlParser: true,
+  useUnifiedTopology: true,
+});
+const db = mongoose.connection;
+db.once("open", () => {
+  console.log("Mongoose connected successfully");
+})
+db.on("error", (error) => {
+  console.log(error);
+})
+
+io.on("connection", (socket) => {
+  console.log("There was a connection");
+
+  socket.on("get_info", async () => {
+    const auth = await Auth.find({});
+    const useAuth = auth[auth.length - 1];
+    fetch("https://api.zoom.us/v2/users/me", {
+      headers: {
+        "Authorization": `Bearer ${useAuth.authToken}`
+      }
+    }).then(data => {
+      data.json().then(data => {
+        socket.emit("get_info", data);
+      })
+    });
+  })
+
+  socket.on("get_chat_channels", async () => {
+    const chat_channel_url = "http://api.zoom.us/v2/chat/users/me/channels";
+    const new_url = url.format({
+      pathname: chat_channel_url,
+      query: {
+        "page_size": 2
+      }
+    });
+    const auth = await Auth.find({});
+    const useAuth = auth[auth.length - 1];
+    fetch(new_url, {
+      headers: {
+        "Authorization": `Bearer ${useAuth.authToken}`
+      }
+    }).then(data => {
+      data.json().then(data => {
+        socket.emit("get_chat_channels", data);
+      })
+    })
+  })
+
+  socket.on("create_chat_channel", async () => {
+    const create_chat_channel_url = "http://api.zoom.us/v2/chat/users/me/channels";
+    const new_url = url.format({
+      pathname: create_chat_channel_url,
+      query: {
+        "name": "hello world",
+        "type": 3
+      }
+    })
+    const auth = await Auth.find({});
+    const useAuth = auth[auth.length - 1];
+    fetch(new_url, {
+      headers: {
+        "Authorization": `Bearer ${useAuth.authToken}`
+      }
+    }).then(data => {
+      data.json().then(data => {
+        socket.emit("create_chat_channel", data);
+      })
+    })
+  })
+
+})
+
+app.get("/auth", (req, res) => {
+  const zoom_auth_url = "https://zoom.us/oauth/authorize";
+  const new_url = url.format({
+    pathname: zoom_auth_url,
+    query: {
+      "response_type": "code",
+      "redirect_uri": "http://localhost:5000/auth/cb",
+      "client_id": process.env.client_id
+    }
+  })
+  console.log(new_url);
+  res.redirect(new_url);
+});
+
+app.get("/auth/cb", async (req, res) => {
+  const zoom_token_url = "https://zoom.us/oauth/token";
+  const new_url = url.format({
+    pathname: zoom_token_url,
+    query: {
+      "grant_type": "authorization_code",
+      "code": `${req.query.code}`,
+      "redirect_uri": "http://localhost:5000/auth/cb"
+    }
+  });
+  const header = Buffer.from(`${process.env.client_id}:${process.env.client_secret}`).toString("base64");
+  fetch(new_url.toString(), {
+    headers: {
+      "Authorization": `Basic ${header}`
+    },
+    method: "POST"
+  }).then(data => {
+    data.json().then(async data => {
+      console.log(data.access_token);
+      try {
+        const auth = new Auth({
+          authToken: data.access_token,
+          refreshToken: data.refresh_token
+        });
+        console.log(auth);
+        await auth.save();
+        res.json({
+          message: "The transaction was completed"
+        })
+      } catch (err) {
+        console.log(err);
+      }
+    })
+  })
+})
+
+server.listen(PORT, () => {
+  console.log(`The server is listening on port ${PORT}`);
+})
